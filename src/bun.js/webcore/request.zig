@@ -77,6 +77,10 @@ pub const Request = struct {
     pub const getBlobWithoutCallFrame = RequestMixin.getBlobWithoutCallFrame;
     pub const WeakRef = bun.WeakPtr(Request, .weak_ptr_data);
 
+    pub fn memoryCost(this: *const Request) usize {
+        return @sizeOf(Request) + this.request_context.memoryCost() + this.url.byteSlice().len + this.body.value.memoryCost();
+    }
+
     pub export fn Request__getUWSRequest(
         this: *Request,
     ) ?*uws.Request {
@@ -103,11 +107,9 @@ pub const Request = struct {
     }
 
     comptime {
-        if (!JSC.is_bindgen) {
-            _ = Request__getUWSRequest;
-            _ = Request__setInternalEventCallback;
-            _ = Request__setTimeout;
-        }
+        _ = Request__getUWSRequest;
+        _ = Request__setInternalEventCallback;
+        _ = Request__setTimeout;
     }
 
     pub const InternalJSEventCallback = struct {
@@ -223,7 +225,7 @@ pub const Request = struct {
 
             try formatter.writeIndent(Writer, writer);
             try writer.writeAll(comptime Output.prettyFmt("<r>headers<d>:<r> ", enable_ansi_colors));
-            formatter.printAs(.Private, Writer, writer, this.getHeaders(formatter.globalThis), .DOMWrapper, enable_ansi_colors);
+            try formatter.printAs(.Private, Writer, writer, this.getHeaders(formatter.globalThis), .DOMWrapper, enable_ansi_colors);
 
             if (this.body.value == .Blob) {
                 try writer.writeAll("\n");
@@ -243,7 +245,7 @@ pub const Request = struct {
                 if (this.body.value.Locked.readable.get()) |stream| {
                     try writer.writeAll("\n");
                     try formatter.writeIndent(Writer, writer);
-                    formatter.printAs(.Object, Writer, writer, stream.value, stream.value.jsType(), enable_ansi_colors);
+                    try formatter.printAs(.Object, Writer, writer, stream.value, stream.value.jsType(), enable_ansi_colors);
                 }
             }
         }
@@ -486,6 +488,7 @@ pub const Request = struct {
                     const href = bun.JSC.URL.hrefFromString(this.url);
                     // TODO: what is the right thing to do for invalid URLS?
                     if (!href.isEmpty()) {
+                        this.url.deref();
                         this.url = href;
                     }
 
@@ -608,7 +611,7 @@ pub const Request = struct {
                     }
                 }
 
-                if (value.asDirect(JSC.WebCore.Response)) |response| {
+                if (value.asDirect(Response)) |response| {
                     if (!fields.contains(.method)) {
                         req.method = response.init.method;
                         fields.insert(.method);

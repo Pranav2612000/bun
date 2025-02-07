@@ -35,7 +35,6 @@ const Run = @import("../bun_js.zig").Run;
 var path_buf: bun.PathBuffer = undefined;
 var path_buf2: bun.PathBuffer = undefined;
 const PathString = bun.PathString;
-const is_bindgen = false;
 const HTTPThread = bun.http.HTTPThread;
 
 const JSC = bun.JSC;
@@ -84,7 +83,7 @@ fn escapeXml(str: string, writer: anytype) !void {
         try writer.writeAll(str[last..]);
     }
 }
-fn fmtStatusTextLine(comptime status: @Type(.EnumLiteral), comptime emoji_or_color: bool) []const u8 {
+fn fmtStatusTextLine(comptime status: @Type(.enum_literal), comptime emoji_or_color: bool) []const u8 {
     comptime {
         // emoji and color might be split into two different options in the future
         // some terminals support color, but not emoji.
@@ -108,7 +107,7 @@ fn fmtStatusTextLine(comptime status: @Type(.EnumLiteral), comptime emoji_or_col
     }
 }
 
-fn writeTestStatusLine(comptime status: @Type(.EnumLiteral), writer: anytype) void {
+fn writeTestStatusLine(comptime status: @Type(.enum_literal), writer: anytype) void {
     if (Output.enable_ansi_colors_stderr)
         writer.print(fmtStatusTextLine(status, true), .{}) catch unreachable
     else
@@ -272,9 +271,7 @@ pub const JunitReporter = struct {
                 \\
             );
 
-            try this.contents.appendSlice(bun.default_allocator,
-                \\<testsuites name="bun test" 
-            );
+            try this.contents.appendSlice(bun.default_allocator, "<testsuites name=\"bun test\" ");
             this.offset_of_testsuites_value = this.contents.items.len;
             try this.contents.appendSlice(bun.default_allocator, ">\n");
         }
@@ -764,7 +761,7 @@ pub const CommandLineReporter = struct {
             @compileError("No reporters enabled");
         }
 
-        const relative_dir = vm.bundler.fs.top_level_dir;
+        const relative_dir = vm.transpiler.fs.top_level_dir;
 
         // --- Text ---
         const max_filepath_length: usize = if (reporters.text) brk: {
@@ -820,7 +817,6 @@ pub const CommandLineReporter = struct {
                     },
                     .always_return_none = true,
                 },
-                .sync,
             );
 
             // Write the lcov.info file to a temporary file we atomically rename to the final name after it succeeds
@@ -1051,7 +1047,7 @@ const Scanner = struct {
         }
 
         const ext = std.fs.path.extension(slice);
-        const loader_by_ext = JSC.VirtualMachine.get().bundler.options.loader(ext);
+        const loader_by_ext = JSC.VirtualMachine.get().transpiler.options.loader(ext);
 
         // allow file loader just incase they use a custom loader with a non-standard extension
         if (!(loader_by_ext.isJavaScriptLike() or loader_by_ext == .file)) {
@@ -1178,8 +1174,6 @@ pub const TestCommand = struct {
     };
 
     pub fn exec(ctx: Command.Context) !void {
-        if (comptime is_bindgen) unreachable;
-
         Output.is_github_action = Output.isGithubAction();
 
         // print the version so you know its doing stuff if it takes a sec
@@ -1261,12 +1255,13 @@ pub const TestCommand = struct {
                 .store_fd = true,
                 .smol = ctx.runtime_options.smol,
                 .debugger = ctx.runtime_options.debugger,
+                .is_main_thread = true,
             },
         );
         vm.argv = ctx.passthrough;
         vm.preload = ctx.preloads;
-        vm.bundler.options.rewrite_jest_for_tests = true;
-        vm.bundler.options.env.behavior = .load_all_without_inlining;
+        vm.transpiler.options.rewrite_jest_for_tests = true;
+        vm.transpiler.options.env.behavior = .load_all_without_inlining;
 
         const node_env_entry = try env_loader.map.getOrPutWithoutValue("NODE_ENV");
         if (!node_env_entry.found_existing) {
@@ -1277,18 +1272,18 @@ pub const TestCommand = struct {
             };
         }
 
-        try vm.bundler.configureDefines();
+        try vm.transpiler.configureDefines();
 
         vm.loadExtraEnvAndSourceCodePrinter();
         vm.is_main_thread = true;
         JSC.VirtualMachine.is_main_thread_vm = true;
 
         if (ctx.test_options.coverage.enabled) {
-            vm.bundler.options.code_coverage = true;
-            vm.bundler.options.minify_syntax = false;
-            vm.bundler.options.minify_identifiers = false;
-            vm.bundler.options.minify_whitespace = false;
-            vm.bundler.options.dead_code_elimination = false;
+            vm.transpiler.options.code_coverage = true;
+            vm.transpiler.options.minify_syntax = false;
+            vm.transpiler.options.minify_identifiers = false;
+            vm.transpiler.options.minify_whitespace = false;
+            vm.transpiler.options.dead_code_elimination = false;
             vm.global.vm().setControlFlowProfiler(true);
         }
 
@@ -1298,7 +1293,7 @@ pub const TestCommand = struct {
             // We use the string "Etc/UTC" instead of "UTC" so there is no normalization difference.
             "Etc/UTC";
 
-        if (vm.bundler.env.get("TZ")) |tz| {
+        if (vm.transpiler.env.get("TZ")) |tz| {
             TZ_NAME = tz;
         }
 
@@ -1351,8 +1346,8 @@ pub const TestCommand = struct {
 
             var scanner = Scanner{
                 .dirs_to_scan = Scanner.Fifo.init(ctx.allocator),
-                .options = &vm.bundler.options,
-                .fs = vm.bundler.fs,
+                .options = &vm.transpiler.options,
+                .fs = vm.transpiler.fs,
                 .filter_names = filter_names_normalized,
                 .results = &results,
             };
@@ -1379,7 +1374,7 @@ pub const TestCommand = struct {
                 else => {},
             }
 
-            // vm.bundler.fs.fs.readDirectory(_dir: string, _handle: ?std.fs.Dir)
+            // vm.transpiler.fs.fs.readDirectory(_dir: string, _handle: ?std.fs.Dir)
             runAllTests(reporter, vm, test_files, ctx.allocator);
         }
 
@@ -1658,7 +1653,7 @@ pub const TestCommand = struct {
         defer reporter.jest.only = prev_only;
 
         const file_start = reporter.jest.files.len;
-        const resolution = try vm.bundler.resolveEntryPoint(file_name);
+        const resolution = try vm.transpiler.resolveEntryPoint(file_name);
         vm.clearEntryPoint();
 
         const file_path = resolution.path_pair.primary.text;
